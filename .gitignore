@@ -1,0 +1,18 @@
+# Melange private signing keys (keep public key if distributing)
+melange.rsa
+*.rsa
+
+# Build outputs and temporary packages
+packages/
+output/
+*.tar
+*.tar.gz
+*.spdx.json
+
+# IDE and OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+melange.rsa.pub
