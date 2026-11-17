@@ -46,8 +46,9 @@ jobs:
         id: meta
         run: |
           REF_NAME="${GITHUB_REF_NAME}"
+          OWNER_LOWER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           echo "tag=${REF_NAME}" >> "$GITHUB_OUTPUT"
-          echo "image=ghcr.io/${{ github.repository_owner }}/java21-distroless" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${OWNER_LOWER}/java21-distroless" >> "$GITHUB_OUTPUT"
 
       - name: Generate Melange Signing Key
         run: |
