@@ -1,0 +1,116 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hardened-java-service
+  namespace: production
+  labels:
+    app.kubernetes.io/name: java-service
+    app.kubernetes.io/part-of: core-platform
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: java-service
+  template:
+    metadata:
+      labels:
+        app: java-service
+      annotations:
+        # eBPF / Continuous Profiling annotations (Parca, Pyroscope, Pixie)
+        profiles.grafana.com/memory.scrape: "true"
+        profiles.grafana.com/cpu.scrape: "true"
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/actuator/prometheus"
+    spec:
+      # Pod-level security context
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+
+      terminationGracePeriodSeconds: 30
+
+      containers:
+        - name: app
+          image: ghcr.io/my-org/java21-distroless:latest
+          imagePullPolicy: IfNotPresent
+          args: ["-jar", "/app/app.jar"]
+
+          # Container Hardening
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+
+          # Resource boundaries tuned for Cgroup v2 and G1GC
+          # MaxRAMPercentage=70.0 means JVM Heap max = 70% of 2Gi = ~1.43Gi
+          # Remaining 600Mi is reserved for:
+          # - Native memory (jemalloc slabs, Netty direct buffers, Metaspace)
+          # - Thread stacks (-Xss1m)
+          # - JIT CodeCache
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: "1536Mi"
+            limits:
+              cpu: "2000m"
+              memory: "2048Mi"
+
+          env:
+            # Supplemental options if needed (AppCDS activation, eBPF frame pointer retention)
+            - name: JDK_JAVA_OPTIONS
+              value: >-
+                -XX:+PreserveFramePointer
+                -Djava.security.egd=file:/dev/urandom
+            # jemalloc background thread tuning
+            - name: MALLOC_CONF
+              value: "background_thread:true,metadata_thp:auto,dirty_decay_ms:10000,muzzy_decay_ms:15000"
+
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: management
+              containerPort: 8081
+              protocol: TCP
+
+          # Startup / Liveness / Readiness probes tuned for Java JIT warm-up
+          startupProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8081
+            failureThreshold: 30
+            periodSeconds: 3
+
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8081
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8081
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+
+          # Storage mounts: ReadOnly rootfs requires writable tmpfs for /tmp
+          volumeMounts:
+            - name: tmp-volume
+              mountPath: /tmp
+
+      volumes:
+        - name: tmp-volume
+          emptyDir:
+            medium: Memory
+            sizeLimit: 128Mi
