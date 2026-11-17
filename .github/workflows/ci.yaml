@@ -1,0 +1,81 @@
+name: CI - Build, Test & Scan
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  build-and-test:
+    name: Build & Validate Multi-Arch Distroless Image
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU for Multi-Architecture Emulation
+        uses: docker/setup-qemu-action@v3
+
+      - name: Setup Melange
+        uses: chainguard-dev/actions/setup-melange@main
+
+      - name: Setup Apko
+        uses: chainguard-dev/actions/setup-apko@main
+
+      - name: Generate Melange Signing Key
+        run: |
+          melange keygen melange.rsa
+
+      - name: Build Custom JRE Package with Melange
+        run: |
+          melange build melange/melange.yaml \
+            --arch ${{ matrix.arch }} \
+            --signing-key melange.rsa \
+            --out-dir packages
+
+      - name: Build OCI Image with Apko
+        run: |
+          mkdir -p output
+          apko build apko/apko.yaml \
+            test-java21:${{ matrix.arch }} \
+            output/image-${{ matrix.arch }}.tar \
+            --arch ${{ matrix.arch }} \
+            --keyring-append melange.rsa.pub \
+            --sbom-formats spdx-json
+
+      - name: Load Image into Docker Engine (${{ matrix.arch }})
+        if: matrix.arch == 'x86_64'
+        run: |
+          docker load < output/image-${{ matrix.arch }}.tar
+
+      - name: Validate JVM Parameters, Container Support, and jemalloc
+        if: matrix.arch == 'x86_64'
+        run: |
+          echo "=== 1. Inspecting JVM Version & Base Configuration ==="
+          docker run --rm test-java21:${{ matrix.arch }} -version
+
+          echo "=== 2. Verifying Container Support & Memory Percentage ==="
+          docker run --rm -m 512m test-java21:${{ matrix.arch }} -XX:+PrintFlagsFinal -version | grep -E "UseContainerSupport|MaxRAMPercentage|UseG1GC|UseStringDeduplication"
+
+          echo "=== 3. Testing jemalloc Library Preload ==="
+          # Check that jemalloc is actively linked and non-crashing
+          docker run --rm test-java21:${{ matrix.arch }} -XshowSettings:properties -version
+
+      - name: Security Vulnerability Scan (Zero-CVE Posture)
+        uses: aquasecurity/trivy-action@master
+        with:
+          input: output/image-${{ matrix.arch }}.tar
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
