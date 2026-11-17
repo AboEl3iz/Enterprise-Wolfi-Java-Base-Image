@@ -30,7 +30,11 @@ jobs:
         uses: chainguard-dev/actions/setup-melange@main
 
       - name: Setup Apko
-        uses: chainguard-dev/actions/setup-apko@main
+        run: |
+          set -euxo pipefail
+          APKO_VERSION="1.5.1"
+          curl -sL "https://github.com/chainguard-dev/apko/releases/download/v${APKO_VERSION}/apko_${APKO_VERSION}_linux_amd64.tar.gz" | sudo tar -xz -C /usr/local/bin apko
+          apko version
 
       - name: Generate Melange Signing Key
         run: |
@@ -56,7 +60,12 @@ jobs:
       - name: Load Image into Docker Engine (${{ matrix.arch }})
         if: matrix.arch == 'x86_64'
         run: |
-          docker load < output/image-${{ matrix.arch }}.tar
+          LOAD_OUTPUT=$(docker load < output/image-${{ matrix.arch }}.tar)
+          echo "${LOAD_OUTPUT}"
+          LOADED_TAG=$(echo "${LOAD_OUTPUT}" | awk -F': ' '/Loaded image/ {print $2}')
+          if [ -n "${LOADED_TAG}" ] && [ "${LOADED_TAG}" != "test-java21:${{ matrix.arch }}" ]; then
+            docker tag "${LOADED_TAG}" "test-java21:${{ matrix.arch }}"
+          fi
 
       - name: Validate JVM Parameters, Container Support, and jemalloc
         if: matrix.arch == 'x86_64'
