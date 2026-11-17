@@ -1,0 +1,88 @@
+package:
+  name: wolfi-custom-jre21
+  version: "21.0.6"
+  epoch: 0
+  description: "Enterprise hardened, stripped OpenJDK 21 JRE with jemalloc and base CDS"
+  copyright:
+    - license: GPL-2.0-with-classpath-exception
+  dependencies:
+    runtime:
+      - glibc
+      - libstdc++
+      - libgcc
+      - zlib
+      - jemalloc
+      - ca-certificates-bundle
+
+environment:
+  contents:
+    repositories:
+      - https://packages.wolfi.dev/os
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    packages:
+      - wolfi-base
+      - busybox
+      - openjdk-21
+      - openjdk-21-jmods
+      - binutils
+      - jemalloc-dev
+      - ca-certificates-bundle
+
+pipeline:
+  - name: "Generate Stripped Custom JRE via Jlink"
+    runs: |
+      set -euxo pipefail
+
+      JDK_DIR="/usr/lib/jvm/java-21-openjdk"
+      OUT_JRE="${{targets.destdir}}/opt/java/openjdk"
+      mkdir -p "${{targets.destdir}}/opt/java"
+      rm -rf "${OUT_JRE}"
+
+      # Verify jmods exist
+      if [ ! -d "${JDK_DIR}/jmods" ]; then
+        echo "Error: jmods directory not found at ${JDK_DIR}/jmods"
+        exit 1
+      fi
+
+      # Run jlink via direct binary path to extract essential runtime modules
+      "${JDK_DIR}/bin/jlink" \
+        --module-path "${JDK_DIR}/jmods" \
+        --add-modules java.base,java.compiler,java.instrument,java.logging,java.management,java.management.rmi,java.naming,java.net.http,java.prefs,java.rmi,java.scripting,java.security.jgss,java.security.sasl,java.sql,java.sql.rowset,java.transaction.xa,java.xml,java.xml.crypto,jdk.crypto.cryptoki,jdk.crypto.ec,jdk.dynalink,jdk.httpserver,jdk.jcmd,jdk.jfr,jdk.jsobject,jdk.management,jdk.management.agent,jdk.management.jfr,jdk.net,jdk.naming.dns,jdk.naming.rmi,jdk.security.auth,jdk.security.jgss,jdk.unsupported,jdk.zipfs \
+        --strip-debug \
+        --no-man-pages \
+        --no-header-files \
+        --compress=zip-6 \
+        --output "${OUT_JRE}"
+
+
+  - name: "Pre-generate Base Class Data Sharing (CDS) Archive"
+    runs: |
+      set -euxo pipefail
+      OUT_JRE="${{targets.destdir}}/opt/java/openjdk"
+
+      # Generate default classes.jsa for base JDK classes
+      "${OUT_JRE}/bin/java" -Xshare:dump
+
+      # Verify archive creation
+      if [ ! -f "${OUT_JRE}/lib/server/classes.jsa" ]; then
+        echo "Error: Base CDS archive was not created!"
+        exit 1
+      fi
+
+  - name: "Set up Symlinks and CA Certificates"
+    runs: |
+      set -euxo pipefail
+      OUT_JRE="${{targets.destdir}}/opt/java/openjdk"
+      mkdir -p "${{targets.destdir}}/usr/bin"
+
+      # Symlink java and jcmd binaries into standard PATH
+      ln -sf /opt/java/openjdk/bin/java "${{targets.destdir}}/usr/bin/java"
+      ln -sf /opt/java/openjdk/bin/jcmd "${{targets.destdir}}/usr/bin/jcmd"
+
+      # Copy the up-to-date cacerts from Wolfi's build environment if system java cacerts exists
+      if [ -f "/etc/ssl/certs/java/cacerts" ]; then
+        mkdir -p "${OUT_JRE}/lib/security"
+        rm -f "${OUT_JRE}/lib/security/cacerts"
+        cp "/etc/ssl/certs/java/cacerts" "${OUT_JRE}/lib/security/cacerts"
+      fi
