@@ -1,0 +1,62 @@
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - wolfi-base
+    - openjdk-21-default-jvm
+    - jemalloc
+    - ca-certificates-bundle
+    - tzdata
+
+accounts:
+  groups:
+    - groupname: nonroot
+      gid: 65532
+  users:
+    - username: nonroot
+      uid: 65532
+      gid: 65532
+      homedir: /home/nonroot
+  run-as: 65532
+
+environment:
+  PATH: /usr/lib/jvm/java-21-openjdk/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  JAVA_HOME: /usr/lib/jvm/java-21-openjdk
+  LANG: C.UTF-8
+  LC_ALL: C.UTF-8
+  # jemalloc native memory allocator
+  LD_PRELOAD: /usr/lib/libjemalloc.so.2
+  MALLOC_CONF: "background_thread:true,metadata_thp:auto,dirty_decay_ms:10000,muzzy_decay_ms:15000"
+  # JVM Container & GC Performance Tuning
+  JAVA_TOOL_OPTIONS: >-
+    -XX:+UseContainerSupport
+    -XX:MaxRAMPercentage=70.0
+    -XX:+UseG1GC
+    -XX:+UseStringDeduplication
+    -XX:G1PeriodicGCInterval=15000
+    -Xshare:auto
+    -XX:+ExitOnOutOfMemoryError
+
+paths:
+  - path: /tmp
+    type: directory
+    permissions: 01777
+    uid: 0
+    gid: 0
+  - path: /app
+    type: directory
+    permissions: 0755
+    uid: 65532
+    gid: 65532
+  - path: /home/nonroot
+    type: directory
+    permissions: 0700
+    uid: 65532
+    gid: 65532
+
+entrypoint:
+  command: /usr/bin/java
+
+work-dir: /app

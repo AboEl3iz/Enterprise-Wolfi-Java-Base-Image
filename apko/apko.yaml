@@ -1,0 +1,66 @@
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+    - ./packages
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    - melange.rsa.pub
+  packages:
+    - wolfi-custom-jre21
+    - jemalloc
+    - ca-certificates-bundle
+    - tzdata
+
+accounts:
+  groups:
+    - groupname: nonroot
+      gid: 65532
+  users:
+    - username: nonroot
+      uid: 65532
+      gid: 65532
+      homedir: /home/nonroot
+  run-as: 65532
+
+environment:
+  PATH: /opt/java/openjdk/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  JAVA_HOME: /opt/java/openjdk
+  LANG: C.UTF-8
+  LC_ALL: C.UTF-8
+  # jemalloc native memory allocator configuration:
+  # background_thread: eliminates stalls by running page purging in background threads
+  # dirty_decay_ms & muzzy_decay_ms: actively releases uncommitted pages to Linux kernel (madvise)
+  # metadata_thp: optimizes hugepage allocation for jemalloc metadata structures
+  LD_PRELOAD: /usr/lib/libjemalloc.so.2
+  MALLOC_CONF: "background_thread:true,metadata_thp:auto,dirty_decay_ms:10000,muzzy_decay_ms:15000"
+  # JVM Container & GC Performance Tuning
+  JAVA_TOOL_OPTIONS: >-
+    -XX:+UseContainerSupport
+    -XX:MaxRAMPercentage=70.0
+    -XX:+UseG1GC
+    -XX:+UseStringDeduplication
+    -XX:G1PeriodicGCInterval=15000
+    -Xshare:auto
+    -XX:+ExitOnOutOfMemoryError
+
+paths:
+  - path: /tmp
+    type: directory
+    permissions: 01777
+    uid: 0
+    gid: 0
+  - path: /app
+    type: directory
+    permissions: 0755
+    uid: 65532
+    gid: 65532
+  - path: /home/nonroot
+    type: directory
+    permissions: 0700
+    uid: 65532
+    gid: 65532
+
+entrypoint:
+  command: /opt/java/openjdk/bin/java
+
+work-dir: /app
