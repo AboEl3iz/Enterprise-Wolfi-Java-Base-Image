@@ -33,7 +33,7 @@ jobs:
         run: |
           set -euxo pipefail
           APKO_VERSION="1.5.1"
-          curl -sL "https://github.com/chainguard-dev/apko/releases/download/v${APKO_VERSION}/apko_${APKO_VERSION}_linux_amd64.tar.gz" | sudo tar -xz -C /usr/local/bin apko
+          curl -sL "https://github.com/chainguard-dev/apko/releases/download/v${APKO_VERSION}/apko_${APKO_VERSION}_linux_amd64.tar.gz" | sudo tar -xz -C /usr/local/bin --strip-components=1 "apko_${APKO_VERSION}_linux_amd64/apko"
           apko version
 
       - name: Generate Melange Signing Key
