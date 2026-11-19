@@ -61,16 +61,8 @@ To balance **Zero Attack Surface in Production** with **Fast Developer Troublesh
 
 In enterprise Java microservices (Spring Boot, Quarkus, Netty, Kafka clients), off-heap allocations are prolific. Standard `glibc` memory allocator (`ptmalloc3`) handles multi-threading by establishing independent memory arenas per thread. 
 
-```
-               glibc (ptmalloc3)                       jemalloc 5.3+
-      ┌──────────────────────────────────┐   ┌──────────────────────────────────┐
-      │ Arena 0   Arena 1 ... Arena N    │   │ Slabs & Bins (Class-sized Alloc) │
-      │  (Massive Virtual Fragmentation) │   │ Background Purging Thread Enabled│
-      └─────────────────┬────────────────┘   └─────────────────┬────────────────┘
-                        ▼                                      ▼
-             High Memory Fragmentation               Predictable RSS Baseline
-             Frequent Cgroup OOMKill                 Zero Spurious Cgroup Evictions
-```
+![glibc ptmalloc vs jemalloc memory architecture](assets/Untitled-2026-10-20-1657.png)
+
 
 #### Why `LD_PRELOAD=/usr/lib/libjemalloc.so.2` is Critical:
 1. **Size-Classed Allocations (Slabs):** Eliminates native fragmentation by segregating memory allocations into discrete size buckets.
