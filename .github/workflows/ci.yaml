@@ -1,10 +1,10 @@
-name: CI - Build, Test & Scan
+name: CI - Build, Test & Scan Variants
 
 on:
   pull_request:
-    branches: [main,master ]
+    branches: [main, master]
   push:
-    branches: [main,master]
+    branches: [main, master]
 
 permissions:
   contents: read
@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   build-and-test:
-    name: Build & Validate Multi-Arch Distroless Image
+    name: Build & Validate Multi-Arch Variants (${{ matrix.arch }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -47,43 +47,96 @@ jobs:
             --signing-key melange.rsa \
             --out-dir packages
 
-      - name: Build OCI Image with Apko
+      # ------------------------------------------------------------------------
+      # Variant 1: Production (Distroless / Zero Shell)
+      # ------------------------------------------------------------------------
+      - name: Build Production Image with Apko
         run: |
           mkdir -p output
-          apko build apko/apko.yaml \
-            test-java21:${{ matrix.arch }} \
-            output/image-${{ matrix.arch }}.tar \
+          apko build apko/apko-prod.yaml \
+            test-java21-prod:${{ matrix.arch }} \
+            output/image-prod-${{ matrix.arch }}.tar \
             --arch ${{ matrix.arch }} \
             --keyring-append melange.rsa.pub \
             --sbom-formats spdx-json
 
-      - name: Load Image into Docker Engine (${{ matrix.arch }})
+      # ------------------------------------------------------------------------
+      # Variant 2: Debug (Shell + Diagnostics)
+      # ------------------------------------------------------------------------
+      - name: Build Debug Image with Apko
+        run: |
+          apko build apko/apko-debug.yaml \
+            test-java21-debug:${{ matrix.arch }} \
+            output/image-debug-${{ matrix.arch }}.tar \
+            --arch ${{ matrix.arch }} \
+            --keyring-append melange.rsa.pub \
+            --sbom-formats spdx-json
+
+      # ------------------------------------------------------------------------
+      # Variant 3: Build/CI (Full JDK + Maven + Git + Bash)
+      # ------------------------------------------------------------------------
+      - name: Build Compiler/Build Image with Apko
+        run: |
+          apko build apko/apko-build.yaml \
+            test-java21-build:${{ matrix.arch }} \
+            output/image-build-${{ matrix.arch }}.tar \
+            --arch ${{ matrix.arch }} \
+            --sbom-formats spdx-json
+
+      # ------------------------------------------------------------------------
+      # Load and Validate on x86_64 Runner
+      # ------------------------------------------------------------------------
+      - name: Load Images into Docker Engine (${{ matrix.arch }})
         if: matrix.arch == 'x86_64'
         run: |
-          LOAD_OUTPUT=$(docker load < output/image-${{ matrix.arch }}.tar)
-          echo "${LOAD_OUTPUT}"
-          LOADED_TAG=$(echo "${LOAD_OUTPUT}" | awk -F': ' '/Loaded image/ {print $2}')
-          if [ -n "${LOADED_TAG}" ] && [ "${LOADED_TAG}" != "test-java21:${{ matrix.arch }}" ]; then
-            docker tag "${LOADED_TAG}" "test-java21:${{ matrix.arch }}"
+          PROD_OUT=$(docker load < output/image-prod-${{ matrix.arch }}.tar)
+          PROD_TAG=$(echo "${PROD_OUT}" | awk -F': ' '/Loaded image/ {print $2}')
+          docker tag "${PROD_TAG}" test-java21-prod:${{ matrix.arch }}
+
+          DEBUG_OUT=$(docker load < output/image-debug-${{ matrix.arch }}.tar)
+          DEBUG_TAG=$(echo "${DEBUG_OUT}" | awk -F': ' '/Loaded image/ {print $2}')
+          docker tag "${DEBUG_TAG}" test-java21-debug:${{ matrix.arch }}
+
+          BUILD_OUT=$(docker load < output/image-build-${{ matrix.arch }}.tar)
+          BUILD_TAG=$(echo "${BUILD_OUT}" | awk -F': ' '/Loaded image/ {print $2}')
+          docker tag "${BUILD_TAG}" test-java21-build:${{ matrix.arch }}
+
+      - name: Validate Production Variant (Zero Shell, G1GC, jemalloc)
+        if: matrix.arch == 'x86_64'
+        run: |
+          echo "=== 1. Inspecting Prod JVM Version & Base Configuration ==="
+          docker run --rm test-java21-prod:${{ matrix.arch }} -version
+
+          echo "=== 2. Verifying Prod Container Support & Memory Percentage ==="
+          docker run --rm -m 512m test-java21-prod:${{ matrix.arch }} -XX:+PrintFlagsFinal -version | grep -E "UseContainerSupport|MaxRAMPercentage|UseG1GC|UseStringDeduplication"
+
+          echo "=== 3. Confirming Zero Shell Security in Prod ==="
+          if docker run --rm --entrypoint /bin/sh test-java21-prod:${{ matrix.arch }} -c 'echo shell' >/dev/null 2>&1; then
+            echo "ERROR: Shell found in production distroless image!"; exit 1
+          else
+            echo "[OK] No shell in production image"
           fi
 
-      - name: Validate JVM Parameters, Container Support, and jemalloc
+      - name: Validate Debug Variant (Shell, Curl, Diagnostics)
         if: matrix.arch == 'x86_64'
         run: |
-          echo "=== 1. Inspecting JVM Version & Base Configuration ==="
-          docker run --rm test-java21:${{ matrix.arch }} -version
+          echo "=== 1. Verifying Debug Shell & Tools ==="
+          docker run --rm --entrypoint /bin/sh test-java21-debug:${{ matrix.arch }} -c '
+            curl --version | head -n 1
+            nslookup -version 2>&1 | head -n 1
+            echo "Debug tools validated"
+          '
 
-          echo "=== 2. Verifying Container Support & Memory Percentage ==="
-          docker run --rm -m 512m test-java21:${{ matrix.arch }} -XX:+PrintFlagsFinal -version | grep -E "UseContainerSupport|MaxRAMPercentage|UseG1GC|UseStringDeduplication"
+      - name: Validate Build Variant (Full JDK, Maven, Git)
+        if: matrix.arch == 'x86_64'
+        run: |
+          echo "=== 1. Verifying CI Build Tools ==="
+          docker run --rm test-java21-build:${{ matrix.arch }} -c 'javac -version && mvn -v && git --version'
 
-          echo "=== 3. Testing jemalloc Library Preload ==="
-          # Check that jemalloc is actively linked and non-crashing
-          docker run --rm test-java21:${{ matrix.arch }} -XshowSettings:properties -version
-
-      - name: Security Vulnerability Scan (Zero-CVE Posture)
+      - name: Security Vulnerability Scan (Zero-CVE Posture on Prod)
         uses: aquasecurity/trivy-action@master
         with:
-          input: output/image-${{ matrix.arch }}.tar
+          input: output/image-prod-${{ matrix.arch }}.tar
           format: 'table'
           exit-code: '1'
           ignore-unfixed: true

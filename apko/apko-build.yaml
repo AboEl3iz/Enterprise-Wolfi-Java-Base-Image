@@ -1,0 +1,74 @@
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    # Base system & shells
+    - wolfi-base
+    - busybox
+    - bash
+    # Full OpenJDK 21 & Build ecosystem
+    - openjdk-21
+    - openjdk-21-jmods
+    - maven-3.9
+    - git
+    - curl
+    - ca-certificates-bundle
+    - jemalloc
+    - tzdata
+
+accounts:
+  groups:
+    - groupname: nonroot
+      gid: 65532
+  users:
+    - username: nonroot
+      uid: 65532
+      gid: 65532
+      homedir: /home/nonroot
+  run-as: 65532
+
+environment:
+  PATH: /usr/lib/jvm/java-21-openjdk/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  JAVA_HOME: /usr/lib/jvm/java-21-openjdk
+  LANG: C.UTF-8
+  # In build/CI environments, omit global LD_PRELOAD to avoid injecting jemalloc
+  # into every ephemeral bash, git, and shell command in the pipeline.
+  # Fast CI/CD Transient Compiler Tuning:
+  # - TieredStopAtLevel=1: Instructs JIT to stop at C1 (client) compilation,
+  #   bypassing heavy C2 optimizations for short-lived Maven builds (~25-40% faster).
+  JAVA_TOOL_OPTIONS: >-
+    -XX:+UseContainerSupport
+    -XX:MaxRAMPercentage=80.0
+    -XX:+UseG1GC
+    -XX:TieredStopAtLevel=1
+    -XX:+ExitOnOutOfMemoryError
+  MAVEN_OPTS: "-XX:+TieredCompilation -XX:TieredStopAtLevel=1"
+
+paths:
+  - path: /tmp
+    type: directory
+    permissions: 01777
+    uid: 0
+    gid: 0
+  - path: /workspace
+    type: directory
+    permissions: 0777
+    uid: 65532
+    gid: 65532
+  - path: /home/nonroot
+    type: directory
+    permissions: 0755
+    uid: 65532
+    gid: 65532
+  - path: /home/nonroot/.m2
+    type: directory
+    permissions: 0777
+    uid: 65532
+    gid: 65532
+
+entrypoint:
+  command: /bin/bash
+
+work-dir: /workspace

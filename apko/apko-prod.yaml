@@ -27,10 +27,7 @@ environment:
   JAVA_HOME: /opt/java/openjdk
   LANG: C.UTF-8
   LC_ALL: C.UTF-8
-  # jemalloc native memory allocator configuration:
-  # background_thread: eliminates stalls by running page purging in background threads
-  # dirty_decay_ms & muzzy_decay_ms: actively releases uncommitted pages to Linux kernel (madvise)
-  # metadata_thp: optimizes hugepage allocation for jemalloc metadata structures
+  # jemalloc native memory allocator configuration
   LD_PRELOAD: /usr/lib/libjemalloc.so.2
   MALLOC_CONF: "background_thread:true,metadata_thp:auto,dirty_decay_ms:10000,muzzy_decay_ms:15000"
   # JVM Container & GC Performance Tuning

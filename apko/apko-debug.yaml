@@ -1,14 +1,21 @@
 contents:
   repositories:
     - https://packages.wolfi.dev/os
+    - ./packages
   keyring:
     - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    - melange.rsa.pub
   packages:
-    - wolfi-base
-    - openjdk-21-default-jvm
+    # Identical JRE and allocator as production for zero-divergence debugging
+    - wolfi-custom-jre21
     - jemalloc
     - ca-certificates-bundle
     - tzdata
+    # Debug, diagnostic, and network troubleshooting tools
+    - busybox
+    - curl
+    - bind-tools
+    - strace
 
 accounts:
   groups:
@@ -22,14 +29,14 @@ accounts:
   run-as: 65532
 
 environment:
-  PATH: /usr/lib/jvm/java-21-openjdk/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-  JAVA_HOME: /usr/lib/jvm/java-21-openjdk
+  PATH: /opt/java/openjdk/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  JAVA_HOME: /opt/java/openjdk
   LANG: C.UTF-8
   LC_ALL: C.UTF-8
   # jemalloc native memory allocator
   LD_PRELOAD: /usr/lib/libjemalloc.so.2
   MALLOC_CONF: "background_thread:true,metadata_thp:auto,dirty_decay_ms:10000,muzzy_decay_ms:15000"
-  # JVM Container & GC Performance Tuning
+  # JVM Container & GC Performance Tuning (identical to prod)
   JAVA_TOOL_OPTIONS: >-
     -XX:+UseContainerSupport
     -XX:MaxRAMPercentage=70.0
@@ -56,7 +63,8 @@ paths:
     uid: 65532
     gid: 65532
 
+# In debug images, entrypoint is configurable or allows shell fallback
 entrypoint:
-  command: /usr/bin/java
+  command: /opt/java/openjdk/bin/java
 
 work-dir: /app

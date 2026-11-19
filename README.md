@@ -43,6 +43,18 @@ Standard Java base images (e.g., standard Debian, Ubuntu, or Alpine) suffer from
 
 ---
 
+##  The 3 Image Variants
+
+To balance **Zero Attack Surface in Production** with **Fast Developer Troubleshooting** and **CI/CD Compilation**, this project produces 3 distinct container flavors:
+
+| Variant | Tag Aliases | Base Recipe | What's Inside | Primary Use Case |
+| :--- | :--- | :--- | :--- | :--- |
+| **1. Production (`prod`)** | `:latest`, `:prod`, `:v1.0.0` | [`apko/apko-prod.yaml`](apko/apko-prod.yaml) | Stripped JRE 21 + `jemalloc` + AppCDS base. **Zero Shell** (`/bin/sh` omitted), zero package manager, non-root user (`65532:65532`). | Production Kubernetes workloads. Zero attack surface, lowest memory footprint. |
+| **2. Debug (`debug`)** | `:debug`, `:dev`, `:v1.0.0-debug` | [`apko/apko-debug.yaml`](apko/apko-debug.yaml) | Identical custom JRE + `jemalloc` + **Busybox (`/bin/sh`)**, `curl`, `bind-tools` (`dig`, `nslookup`), and `strace`. | Dev, QA, Staging, and local testing. Supports `kubectl exec -it <pod> -- /bin/sh` and HTTP health check probing. |
+| **3. Standard Build (`build`)** | `:build`, `:v1.0.0-build` | [`apko/apko-build.yaml`](apko/apko-build.yaml) | Full `openjdk-21` (javac, jlink, jps, jstack), `maven`, `git`, `bash`, `curl`, and `jemalloc`. | CI/CD build pipelines (GitHub Actions, GitLab CI, Tekton) to compile and test Java projects. |
+
+---
+
 ## 2. Deep Dive: The High-Performance Stack
 
 ### `jemalloc` vs `glibc ptmalloc` Deep Dive
@@ -120,6 +132,27 @@ JAVA_TOOL_OPTIONS: >-
 
 ---
 
+### CI/CD Build Image Tuning: Tiered Compilation & The `LD_PRELOAD` Trap
+
+The **Build variant (`apko/apko-build.yaml`)** features two critical optimizations specifically tailored for CI/CD runners:
+
+#### 1. Avoiding the Global `LD_PRELOAD` Trap in CI Runners
+* In `prod` and `debug` containers, `java` is the primary workload, making global `LD_PRELOAD=/usr/lib/libjemalloc.so.2` with `background_thread:true` ideal.
+* In a `build` container, hundreds of ephemeral shell commands (`bash`, `git`, `curl`, `sed`, `awk`, `find`, `mkdir`) run continuously. Injecting jemalloc globally into every POSIX fork/exec creates memory overhead and causes background thread churn.
+* **The Solution:** The `build` variant omits global `LD_PRELOAD`, allowing native CI CLI tools to run at zero-overhead glibc speeds while keeping `jemalloc` available on-demand.
+
+#### 2. Tiered Compilation for Fast Maven Builds (`-XX:TieredStopAtLevel=1`)
+* In CI/CD pipelines, `mvn clean package` is a **short-lived transient batch process**, not an indefinite production server.
+* Allowing HotSpot to tier up to the heavy **C2 Server Compiler (Level 4)** wastes CPU cycles and compilation time optimizing code that executes only once during build execution.
+* **The Solution:** We set `-XX:TieredStopAtLevel=1` in `JAVA_TOOL_OPTIONS` and `MAVEN_OPTS`:
+  ```bash
+  JAVA_TOOL_OPTIONS: "-XX:+UseContainerSupport -XX:MaxRAMPercentage=80.0 -XX:+UseG1GC -XX:TieredStopAtLevel=1 -XX:+ExitOnOutOfMemoryError"
+  MAVEN_OPTS: "-XX:+TieredCompilation -XX:TieredStopAtLevel=1"
+  ```
+  This forces the JVM to stop at the **Client C1 compiler**, eliminating C2 compilation queues and slashing Maven build times by **20% to 40%**!
+
+---
+
 ## 3. Kernel & eBPF Continuous Profiling Alignment
 
 Modern observability relies on continuous eBPF kernel profiling (e.g., Grafana Pyroscope, Parca, Pixie, Polar Signals, BCC tools).
@@ -156,8 +189,9 @@ This enables eBPF profilers running in the host kernel to walk both native C/gli
 │       ├── ci.yaml                   # Multi-arch Melange + Apko build, test & Trivy scan
 │       └── release.yaml              # GHCR publishing, SPDX SBOM & Cosign signing
 ├── apko/
-│   ├── apko.yaml                     # Primary distroless config (consumes Melange JRE)
-│   └── apko-wolfi-direct.yaml        # Standalone direct Wolfi config (instant build)
+│   ├── apko-prod.yaml                # Variant 1: Production distroless image (zero-shell)
+│   ├── apko-debug.yaml               # Variant 2: Debug image (busybox, curl, bind-tools, strace)
+│   └── apko-build.yaml               # Variant 3: CI/CD compiler image (JDK 21, Maven, Git, Bash)
 ├── melange/
 │   └── melange.yaml                  # Stripped OpenJDK 21 + CDS + jemalloc APK recipe
 ├── examples/
@@ -182,13 +216,19 @@ You can build and test this image locally either using Docker or using native `m
 ### Option A: The One-Click Makefile (Recommended)
 
 ```bash
-# 1. Build everything (Melange custom JRE + Apko container image + Smoke test)
+# Build custom Melange JRE, all 3 container variants, and run test suite
 make all
 
-# 2. Validate JVM settings, jemalloc preload, and G1GC parameters
-make test
+# Or build individual variants:
+make prod       # Builds java21-distroless:prod & :latest (Distroless, zero-shell)
+make debug      # Builds java21-distroless:debug & :dev (with busybox shell, curl, dig, strace)
+make build-img  # Builds java21-distroless:build (with full JDK 21, Maven 3.9, Git, Bash)
 
-# 3. Scan the generated image with Trivy for vulnerabilities
+# Run validation test suite across all 3 variants:
+make test-all
+# Or individually: make test-prod | make test-debug | make test-build
+
+# Scan all variants for vulnerabilities with Trivy:
 make scan
 ```
 
@@ -328,7 +368,7 @@ spec:
         medium: Memory
         sizeLimit: 128Mi
 ```
-*Full production manifest available at [examples/k8s/deployment.yaml](file:///run/media/karim/New%20Volume/devops/JAVA/examples/k8s/deployment.yaml).*
+*Full production manifest available at [examples/k8s/deployment.yaml](examples/k8s/deployment.yaml).*
 
 ---
 

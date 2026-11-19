@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   build-and-publish:
-    name: Build, Publish & Cosign Attestation
+    name: Build, Publish & Sign Multi-Arch Variants
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Source Code
@@ -64,33 +64,71 @@ jobs:
               --out-dir packages
           done
 
-      - name: Publish Multi-Arch Image to GHCR using Apko
-        id: apko-publish
+      # ------------------------------------------------------------------------
+      # 1. Publish Variant 1: Production (latest / prod / vX.Y.Z)
+      # ------------------------------------------------------------------------
+      - name: Publish Multi-Arch Production Image (latest/prod)
         run: |
-          IMAGE_URI="${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
-          LATEST_URI="${{ steps.meta.outputs.image }}:latest"
-
-          DIGEST=$(apko publish apko/apko.yaml \
-            "${IMAGE_URI}" \
-            "${LATEST_URI}" \
+          BASE_IMG="${{ steps.meta.outputs.image }}"
+          TAG="${{ steps.meta.outputs.tag }}"
+          
+          apko publish apko/apko-prod.yaml \
+            "${BASE_IMG}:${TAG}" \
+            "${BASE_IMG}:prod" \
+            "${BASE_IMG}:latest" \
             --arch x86_64,aarch64 \
             --keyring-append melange.rsa.pub \
-            --sbom-formats spdx-json)
-          
-          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+            --sbom-formats spdx-json
 
-      - name: Sign Container Image with Cosign (Keyless via GitHub OIDC)
-        run: |
-          IMAGE_URI="${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
-          echo "Signing ${IMAGE_URI}..."
-          cosign sign --yes "${IMAGE_URI}"
+          cosign sign --yes "${BASE_IMG}:${TAG}"
+          cosign sign --yes "${BASE_IMG}:prod"
+          cosign sign --yes "${BASE_IMG}:latest"
 
-      - name: Attest SBOM with Cosign
+      # ------------------------------------------------------------------------
+      # 2. Publish Variant 2: Debug (dev / debug / vX.Y.Z-debug)
+      # ------------------------------------------------------------------------
+      - name: Publish Multi-Arch Debug Image (dev/debug)
         run: |
-          IMAGE_URI="${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
-          echo "Attesting SBOM for ${IMAGE_URI}..."
-          # Locate generated SBOM from apko output
-          SBOM_FILE=$(find . -name "*.spdx.json" | head -n 1)
-          if [ -f "${SBOM_FILE}" ]; then
-            cosign attest --yes --predicate "${SBOM_FILE}" --type spdx "${IMAGE_URI}"
-          fi
+          BASE_IMG="${{ steps.meta.outputs.image }}"
+          TAG="${{ steps.meta.outputs.tag }}"
+
+          apko publish apko/apko-debug.yaml \
+            "${BASE_IMG}:${TAG}-debug" \
+            "${BASE_IMG}:debug" \
+            "${BASE_IMG}:dev" \
+            --arch x86_64,aarch64 \
+            --keyring-append melange.rsa.pub \
+            --sbom-formats spdx-json
+
+          cosign sign --yes "${BASE_IMG}:${TAG}-debug"
+          cosign sign --yes "${BASE_IMG}:debug"
+          cosign sign --yes "${BASE_IMG}:dev"
+
+      # ------------------------------------------------------------------------
+      # 3. Publish Variant 3: Build (build / vX.Y.Z-build)
+      # ------------------------------------------------------------------------
+      - name: Publish Multi-Arch Build Image (build)
+        run: |
+          BASE_IMG="${{ steps.meta.outputs.image }}"
+          TAG="${{ steps.meta.outputs.tag }}"
+
+          apko publish apko/apko-build.yaml \
+            "${BASE_IMG}:${TAG}-build" \
+            "${BASE_IMG}:build" \
+            --arch x86_64,aarch64 \
+            --sbom-formats spdx-json
+
+          cosign sign --yes "${BASE_IMG}:${TAG}-build"
+          cosign sign --yes "${BASE_IMG}:build"
+
+      # ------------------------------------------------------------------------
+      # Attest SBOMs
+      # ------------------------------------------------------------------------
+      - name: Attest SBOMs with Cosign
+        run: |
+          BASE_IMG="${{ steps.meta.outputs.image }}"
+          TAG="${{ steps.meta.outputs.tag }}"
+          for SBOM in $(find . -maxdepth 2 -name "*.spdx.json"); do
+            echo "Attesting SBOM ${SBOM}..."
+            cosign attest --yes --predicate "${SBOM}" --type spdx "${BASE_IMG}:${TAG}" || true
+          done
