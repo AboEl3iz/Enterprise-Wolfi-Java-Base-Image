@@ -1,0 +1,78 @@
+package:
+  name: wolfi-java21-fips-config
+  version: "2.1.3"
+  epoch: 0
+  description: "Bouncy Castle FIPS 140-3 providers, BCFKS truststore, and strict java.security for Java 21"
+  copyright:
+    - license: Apache-2.0
+  dependencies:
+    runtime:
+      - wolfi-custom-jre21
+
+environment:
+  contents:
+    repositories:
+      - https://packages.wolfi.dev/os
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    packages:
+      - wolfi-base
+      - busybox
+      - curl
+      - ca-certificates-bundle
+      - openjdk-21
+
+pipeline:
+  - name: "Download Bouncy Castle FIPS 140-3 JARs"
+    runs: |
+      set -euxo pipefail
+      FIPS_DIR="${{targets.destdir}}/opt/java/fips"
+      mkdir -p "${FIPS_DIR}"
+
+      MAVEN="https://repo1.maven.org/maven2/org/bouncycastle"
+      curl -fsSL "${MAVEN}/bc-fips/2.1.3/bc-fips-2.1.3.jar"             -o "${FIPS_DIR}/bc-fips.jar"
+      curl -fsSL "${MAVEN}/bctls-fips/2.1.24/bctls-fips-2.1.24.jar"    -o "${FIPS_DIR}/bctls-fips.jar"
+      curl -fsSL "${MAVEN}/bcpkix-fips/2.1.10/bcpkix-fips-2.1.10.jar"  -o "${FIPS_DIR}/bcpkix-fips.jar"
+      curl -fsSL "${MAVEN}/bcutil-fips/2.1.5/bcutil-fips-2.1.5.jar"    -o "${FIPS_DIR}/bcutil-fips.jar"
+
+      # Preserve unmodified JARs for HMAC-SHA-256 self-integrity checks
+      chmod 644 "${FIPS_DIR}"/*.jar
+
+  - name: "Convert system cacerts to FIPS-compliant BCFKS TrustStore"
+    runs: |
+      set -euxo pipefail
+      FIPS_DIR="${{targets.destdir}}/opt/java/fips"
+      KEYTOOL="/usr/lib/jvm/java-21-openjdk/bin/keytool"
+
+      "${KEYTOOL}" -importkeystore \
+        -srckeystore /etc/ssl/certs/java/cacerts \
+        -srcstoretype PKCS12 \
+        -srcstorepass changeit \
+        -destkeystore "${FIPS_DIR}/cacerts.bcfks" \
+        -deststoretype BCFKS \
+        -deststorepass changeit \
+        -providerclass org.bouncycastle.jcajce.provider.BouncyCastleFipsProvider \
+        -providerpath "${FIPS_DIR}/bc-fips.jar" \
+        -noprompt
+
+      chmod 644 "${FIPS_DIR}/cacerts.bcfks"
+
+  - name: "Create Strict FIPS java.security Override"
+    runs: |
+      set -euxo pipefail
+      FIPS_DIR="${{targets.destdir}}/opt/java/fips"
+
+      cat << 'EOF' > "${FIPS_DIR}/fips.security"
+      # Strict FIPS 140-3 Provider List (Zero SunJCE / SunEC fallback)
+      security.provider.1=org.bouncycastle.jcajce.provider.BouncyCastleFipsProvider
+      security.provider.2=org.bouncycastle.jsse.provider.BouncyCastleJsseProvider fips:BCFIPS
+      security.provider.3=SUN
+
+      # Enforce FIPS keystore & TLS algorithms
+      keystore.type=BCFKS
+      ssl.KeyManagerFactory.algorithm=PKIX
+      ssl.TrustManagerFactory.algorithm=PKIX
+      jdk.tls.disabledAlgorithms=SSLv3, TLSv1, TLSv1.1, DTLSv1.0, RC4, DES, MD5withRSA, DH keySize < 2048, EC keySize < 224, 3DES_EDE_CBC, anon, NULL
+      EOF
+
+      chmod 644 "${FIPS_DIR}/fips.security"
