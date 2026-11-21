@@ -54,11 +54,17 @@ jobs:
         run: |
           melange keygen melange.rsa
 
-      - name: Multi-Arch Build Custom JRE Packages
+      - name: Multi-Arch Build Custom JRE & FIPS Packages
         run: |
           for ARCH in x86_64 aarch64; do
-            echo "Building APK for ${ARCH}..."
+            echo "Building JRE APK for ${ARCH}..."
             melange build melange/melange.yaml \
+              --arch "${ARCH}" \
+              --signing-key melange.rsa \
+              --out-dir packages
+
+            echo "Building FIPS APK for ${ARCH}..."
+            melange build melange/melange-fips.yaml \
               --arch "${ARCH}" \
               --signing-key melange.rsa \
               --out-dir packages
@@ -122,6 +128,24 @@ jobs:
           cosign sign --yes "${BASE_IMG}:build"
 
       # ------------------------------------------------------------------------
+      # 4. Publish Variant 4: FIPS 140-3 (fips / vX.Y.Z-fips)
+      # ------------------------------------------------------------------------
+      - name: Publish Multi-Arch FIPS Image (fips)
+        run: |
+          BASE_IMG="${{ steps.meta.outputs.image }}"
+          TAG="${{ steps.meta.outputs.tag }}"
+
+          apko publish apko/apko-fips.yaml \
+            "${BASE_IMG}:${TAG}-fips" \
+            "${BASE_IMG}:fips" \
+            --arch x86_64,aarch64 \
+            --keyring-append melange.rsa.pub \
+            --sbom-formats spdx-json
+
+          cosign sign --yes "${BASE_IMG}:${TAG}-fips"
+          cosign sign --yes "${BASE_IMG}:fips"
+
+      # ------------------------------------------------------------------------
       # Attest SBOMs
       # ------------------------------------------------------------------------
       - name: Attest SBOMs with Cosign
@@ -132,3 +156,4 @@ jobs:
             echo "Attesting SBOM ${SBOM}..."
             cosign attest --yes --predicate "${SBOM}" --type spdx "${BASE_IMG}:${TAG}" || true
           done
+

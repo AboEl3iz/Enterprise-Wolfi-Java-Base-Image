@@ -47,6 +47,13 @@ jobs:
             --signing-key melange.rsa \
             --out-dir packages
 
+      - name: Build FIPS Configuration Package with Melange
+        run: |
+          melange build melange/melange-fips.yaml \
+            --arch ${{ matrix.arch }} \
+            --signing-key melange.rsa \
+            --out-dir packages
+
       # ------------------------------------------------------------------------
       # Variant 1: Production (Distroless / Zero Shell)
       # ------------------------------------------------------------------------
@@ -84,6 +91,18 @@ jobs:
             --sbom-formats spdx-json
 
       # ------------------------------------------------------------------------
+      # Variant 4: FIPS 140-3 (Bouncy Castle FIPS + BCFKS + Strict Security)
+      # ------------------------------------------------------------------------
+      - name: Build FIPS Image with Apko
+        run: |
+          apko build apko/apko-fips.yaml \
+            test-java21-fips:${{ matrix.arch }} \
+            output/image-fips-${{ matrix.arch }}.tar \
+            --arch ${{ matrix.arch }} \
+            --keyring-append melange.rsa.pub \
+            --sbom-formats spdx-json
+
+      # ------------------------------------------------------------------------
       # Load and Validate on x86_64 Runner
       # ------------------------------------------------------------------------
       - name: Load Images into Docker Engine (${{ matrix.arch }})
@@ -100,6 +119,10 @@ jobs:
           BUILD_OUT=$(docker load < output/image-build-${{ matrix.arch }}.tar)
           BUILD_TAG=$(echo "${BUILD_OUT}" | awk -F': ' '/Loaded image/ {print $2}')
           docker tag "${BUILD_TAG}" test-java21-build:${{ matrix.arch }}
+
+          FIPS_OUT=$(docker load < output/image-fips-${{ matrix.arch }}.tar)
+          FIPS_TAG=$(echo "${FIPS_OUT}" | awk -F': ' '/Loaded image/ {print $2}')
+          docker tag "${FIPS_TAG}" test-java21-fips:${{ matrix.arch }}
 
       - name: Validate Production Variant (Zero Shell, G1GC, jemalloc)
         if: matrix.arch == 'x86_64'
@@ -133,6 +156,19 @@ jobs:
           echo "=== 1. Verifying CI Build Tools ==="
           docker run --rm test-java21-build:${{ matrix.arch }} -c 'javac -version && mvn -v && git --version'
 
+      - name: Validate FIPS Variant (Zero Shell, BCFIPS runtime)
+        if: matrix.arch == 'x86_64'
+        run: |
+          echo "=== 1. Inspecting FIPS JVM Version & Options ==="
+          docker run --rm test-java21-fips:${{ matrix.arch }} -version
+
+          echo "=== 2. Confirming Zero Shell Security in FIPS Image ==="
+          if docker run --rm --entrypoint /bin/sh test-java21-fips:${{ matrix.arch }} -c 'echo shell' >/dev/null 2>&1; then
+            echo "ERROR: Shell found in FIPS distroless image!"; exit 1
+          else
+            echo "[OK] No shell in FIPS image"
+          fi
+
       - name: Security Vulnerability Scan (Zero-CVE Posture on Prod)
         uses: aquasecurity/trivy-action@master
         with:
@@ -141,3 +177,13 @@ jobs:
           exit-code: '1'
           ignore-unfixed: true
           severity: 'CRITICAL,HIGH'
+
+      - name: Security Vulnerability Scan (Zero-CVE Posture on FIPS)
+        uses: aquasecurity/trivy-action@master
+        with:
+          input: output/image-fips-${{ matrix.arch }}.tar
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
+
