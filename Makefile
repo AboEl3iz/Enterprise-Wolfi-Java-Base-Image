@@ -1,4 +1,4 @@
-.PHONY: all keygen melange prod debug build-img all-variants test test-prod test-debug test-build test-all scan clean help
+.PHONY: all keygen melange melange-fips prod debug build-img fips all-variants test test-prod test-debug test-build test-fips test-all scan clean help
 
 IMAGE_NAME ?= java21-distroless
 ARCH ?= $(shell uname -m)
@@ -6,7 +6,7 @@ ARCH ?= $(shell uname -m)
 help: ## Show this help menu
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-all: melange all-variants test-all ## Build Melange package, all 3 image variants, and run validation tests
+all: melange melange-fips all-variants test-all ## Build Melange packages, all 4 image variants, and run validation tests
 
 keygen: ## Generate Melange RSA key pair if not present
 	@if [ ! -f melange.rsa ]; then \
@@ -26,6 +26,17 @@ melange: keygen ## Build custom stripped JRE APK package via Melange
 	else \
 		docker run --rm --privileged -v "$$(pwd):/work" -w /work \
 			cgr.dev/chainguard/melange:latest build melange/melange.yaml \
+			--arch $(ARCH) --signing-key melange.rsa --out-dir packages; \
+	fi
+
+melange-fips: keygen ## Build Bouncy Castle FIPS configuration package via Melange
+	@echo "==> [Melange] Building FIPS configuration package for $(ARCH)..."
+	@mkdir -p packages
+	@if command -v melange >/dev/null 2>&1; then \
+		melange build melange/melange-fips.yaml --arch $(ARCH) --signing-key melange.rsa --out-dir packages; \
+	else \
+		docker run --rm --privileged -v "$$(pwd):/work" -w /work \
+			cgr.dev/chainguard/melange:latest build melange/melange-fips.yaml \
 			--arch $(ARCH) --signing-key melange.rsa --out-dir packages; \
 	fi
 
@@ -88,7 +99,26 @@ build-img: ## Build Variant 3: CI/CD Build Image with full JDK 21, Maven, Git, B
 	docker tag "$$LOADED_TAG" $(IMAGE_NAME):build
 	@echo "[SUCCESS] Tagged: $(IMAGE_NAME):build"
 
-all-variants: prod debug build-img ## Build all 3 image variants
+# ------------------------------------------------------------------------------
+# Variant 4: FIPS 140-3 (Bouncy Castle FIPS, BCFKS, Strict Security Override)
+# ------------------------------------------------------------------------------
+fips: ## Build Variant 4: FIPS 140-3 Compliant Distroless Image (fips)
+	@echo "==> [Apko] Building FIPS 140-3 Image ($(IMAGE_NAME):fips)..."
+	@mkdir -p output
+	@if command -v apko >/dev/null 2>&1; then \
+		apko build apko/apko-fips.yaml $(IMAGE_NAME):fips output/image-fips.tar \
+			--arch $(ARCH) --keyring-append melange.rsa.pub --sbom-formats spdx-json; \
+	else \
+		docker run --rm -v "$$(pwd):/work" -w /work \
+			cgr.dev/chainguard/apko:latest build apko/apko-fips.yaml $(IMAGE_NAME):fips output/image-fips.tar \
+			--arch $(ARCH) --keyring-append melange.rsa.pub --sbom-formats spdx-json; \
+	fi
+	@LOAD_OUT=$$(docker load < output/image-fips.tar); \
+	LOADED_TAG=$$(echo "$$LOAD_OUT" | awk -F': ' '/Loaded image/ {print $$2}'); \
+	docker tag "$$LOADED_TAG" $(IMAGE_NAME):fips
+	@echo "[SUCCESS] Tagged: $(IMAGE_NAME):fips"
+
+all-variants: prod debug build-img fips ## Build all 4 image variants
 
 # ------------------------------------------------------------------------------
 # Verification & Testing
@@ -117,7 +147,19 @@ test-build: ## Test build image: verify Maven, Git, javac, bash
 	@echo "==> [TEST] Build Image ($(IMAGE_NAME):build)..."
 	@docker run --rm $(IMAGE_NAME):build -c 'javac -version && mvn -v && git --version'
 
-test-all: test-prod test-debug test-build ## Run full test suite across all 3 variants
+test-fips: ## Test FIPS image: verify BCFIPS/BCJSSE security providers, BCFKS keystore, and zero-shell
+	@echo "==> [TEST] FIPS 140-3 Distroless Image ($(IMAGE_NAME):fips)..."
+	@docker run --rm $(IMAGE_NAME):fips -version
+	@echo "--> Running FIPS 140-3 cryptographic & security provider test:"
+	@docker run --rm -v "$$(pwd)/benchmark:/app" $(IMAGE_NAME):fips -cp /app FipsValidator
+	@echo "--> Confirming Zero Shell security in FIPS image (expected to fail):"
+	@if docker run --rm --entrypoint /bin/sh $(IMAGE_NAME):fips -c 'echo shell' >/dev/null 2>&1; then \
+		echo "ERROR: Shell found in FIPS distroless image!"; exit 1; \
+	else \
+		echo "[OK] No shell in FIPS image (Distroless verified)"; \
+	fi
+
+test-all: test-prod test-debug test-build test-fips ## Run full test suite across all 4 variants
 
 scan: ## Run Trivy vulnerability scan against all variants
 	@echo "==> Scanning production image..."
@@ -126,6 +168,9 @@ scan: ## Run Trivy vulnerability scan against all variants
 	@docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image --severity HIGH,CRITICAL $(IMAGE_NAME):debug
 	@echo "==> Scanning build image..."
 	@docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image --severity HIGH,CRITICAL $(IMAGE_NAME):build
+	@echo "==> Scanning FIPS image..."
+	@docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image --severity HIGH,CRITICAL $(IMAGE_NAME):fips
 
 clean: ## Clean generated packages, image tarballs, and temporary outputs
 	@rm -rf packages output melange.rsa*
+

@@ -52,6 +52,8 @@ To balance **Zero Attack Surface in Production** with **Fast Developer Troublesh
 | **1. Production (`prod`)** | `:latest`, `:prod`, `:v1.0.0` | [`apko/apko-prod.yaml`](apko/apko-prod.yaml) | Stripped JRE 21 + `jemalloc` + AppCDS base. **Zero Shell** (`/bin/sh` omitted), zero package manager, non-root user (`65532:65532`). | Production Kubernetes workloads. Zero attack surface, lowest memory footprint. |
 | **2. Debug (`debug`)** | `:debug`, `:dev`, `:v1.0.0-debug` | [`apko/apko-debug.yaml`](apko/apko-debug.yaml) | Identical custom JRE + `jemalloc` + **Busybox (`/bin/sh`)**, `curl`, `bind-tools` (`dig`, `nslookup`), and `strace`. | Dev, QA, Staging, and local testing. Supports `kubectl exec -it <pod> -- /bin/sh` and HTTP health check probing. |
 | **3. Standard Build (`build`)** | `:build`, `:v1.0.0-build` | [`apko/apko-build.yaml`](apko/apko-build.yaml) | Full `openjdk-21` (javac, jlink, jps, jstack), `maven`, `git`, `bash`, `curl`, and `jemalloc`. | CI/CD build pipelines (GitHub Actions, GitLab CI, Tekton) to compile and test Java projects. |
+| **4. FIPS 140-3 (`fips`)** | `:fips`, `:v1.0.0-fips` | [`apko/apko-fips.yaml`](apko/apko-fips.yaml) | Stripped JRE 21 + `jemalloc` + **Bouncy Castle FIPS 140-3** (`bc-fips`, `bctls-fips`, `bcpkix-fips`, `bcutil-fips`) + **BCFKS Keystore**. Zero Shell. | Regulated federal, financial, and healthcare workloads requiring strict NIST FIPS 140-3 compliance. |
+
 
 ---
 
@@ -145,6 +147,30 @@ The **Build variant (`apko/apko-build.yaml`)** features two critical optimizatio
 
 ---
 
+### FIPS 140-3 Compliance Architecture (`fips`)
+
+For federal, financial, healthcare, and defense workloads, the **FIPS 140-3 Variant (`apko/apko-fips.yaml`)** delivers end-to-end cryptographic enforcement:
+
+1. **Official Bouncy Castle FIPS Providers (`2.1.x`):**
+   * Pre-loads `bc-fips` (v2.1.3), `bctls-fips` (v2.1.24), `bcpkix-fips` (v2.1.10), and `bcutil-fips` (v2.1.5) into `/opt/java/fips/`.
+   * **Self-Integrity Check Guard:** In FIPS mode, `bc-fips` performs an internal HMAC-SHA-256 self-test upon JVM bootstrap. JARs are placed directly without repacking, shading, or stripping, ensuring cryptographic integrity.
+
+2. **BCFKS Compliant TrustStore:**
+   * Converts the 118 standard HTTPS root certificates from `/etc/ssl/certs/java/cacerts` into `/opt/java/fips/cacerts.bcfks` using `BouncyCastleFipsProvider` with BCFKS key derivation, eliminating insecure JKS/PKCS12 truststores.
+
+3. **Strict Security Override (`==` syntax):**
+   * Uses `-Djava.security.properties==/opt/java/fips/fips.security`. The double equals sign (`==`) completely replaces the JVM security configuration, purging unapproved legacy providers (`SunJCE`, `SunEC`) and leaving strictly:
+     ```properties
+     security.provider.1=org.bouncycastle.jcajce.provider.BouncyCastleFipsProvider
+     security.provider.2=org.bouncycastle.jsse.provider.BouncyCastleJsseProvider fips:BCFIPS
+     security.provider.3=SUN
+     ```
+   * Enforces `-Dorg.bouncycastle.fips.approved_only=true`, instantly blocking non-approved ciphers (e.g., DES, 3DES, RC4, MD5).
+
+4. **Universal Module-Path Loading:**
+   * Loaded via `--module-path=/opt/java/fips --add-modules=ALL-MODULE-PATH` in `JAVA_TOOL_OPTIONS`. Unlike `-cp`, the Java Module Path applies universally even when developers run `java -jar application.jar`.
+
+
 ## 3. Kernel & eBPF Continuous Profiling Alignment
 
 Modern observability relies on continuous eBPF kernel profiling (e.g., Grafana Pyroscope, Parca, Pixie, Polar Signals, BCC tools).
@@ -183,9 +209,14 @@ This enables eBPF profilers running in the host kernel to walk both native C/gli
 ├── apko/
 │   ├── apko-prod.yaml                # Variant 1: Production distroless image (zero-shell)
 │   ├── apko-debug.yaml               # Variant 2: Debug image (busybox, curl, bind-tools, strace)
-│   └── apko-build.yaml               # Variant 3: CI/CD compiler image (JDK 21, Maven, Git, Bash)
+│   ├── apko-build.yaml               # Variant 3: CI/CD compiler image (JDK 21, Maven, Git, Bash)
+│   └── apko-fips.yaml                # Variant 4: FIPS 140-3 distroless image (Bouncy Castle + BCFKS)
 ├── melange/
-│   └── melange.yaml                  # Stripped OpenJDK 21 + CDS + jemalloc APK recipe
+│   ├── melange.yaml                  # Stripped OpenJDK 21 + CDS + jemalloc APK recipe
+│   └── melange-fips.yaml             # Bouncy Castle FIPS providers + BCFKS truststore APK recipe
+├── benchmark/
+│   ├── RssBenchmark.java             # jemalloc native RSS memory reclamation benchmark
+│   └── FipsValidator.java            # FIPS 140-3 provider & crypto validation test
 ├── examples/
 │   ├── springboot-app/
 │   │   └── Dockerfile                # Multi-stage Dockerfile with AppCDS generation
@@ -208,17 +239,20 @@ You can build and test this image locally either using Docker or using native `m
 ### Option A: The One-Click Makefile (Recommended)
 
 ```bash
-# Build custom Melange JRE, all 3 container variants, and run test suite
+# Build custom Melange JRE & FIPS packages, all 4 container variants, and run test suite
 make all
 
-# Or build individual variants:
-make prod       # Builds java21-distroless:prod & :latest (Distroless, zero-shell)
-make debug      # Builds java21-distroless:debug & :dev (with busybox shell, curl, dig, strace)
-make build-img  # Builds java21-distroless:build (with full JDK 21, Maven 3.9, Git, Bash)
+# Or build individual packages / variants:
+make melange        # Builds custom JRE package
+make melange-fips   # Builds Bouncy Castle FIPS configuration package
+make prod           # Builds java21-distroless:prod & :latest (Distroless, zero-shell)
+make debug          # Builds java21-distroless:debug & :dev (with busybox shell, curl, dig, strace)
+make build-img      # Builds java21-distroless:build (with full JDK 21, Maven 3.9, Git, Bash)
+make fips           # Builds java21-distroless:fips (FIPS 140-3 distroless, BCFKS, BCFIPS)
 
-# Run validation test suite across all 3 variants:
+# Run validation test suite across all 4 variants:
 make test-all
-# Or individually: make test-prod | make test-debug | make test-build
+# Or individually: make test-prod | make test-debug | make test-build | make test-fips
 
 # Scan all variants for vulnerabilities with Trivy:
 make scan
