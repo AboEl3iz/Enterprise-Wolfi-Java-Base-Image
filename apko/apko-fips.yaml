@@ -1,0 +1,71 @@
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+    - ./packages
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    - melange.rsa.pub
+  packages:
+    - wolfi-custom-jre21
+    - wolfi-java21-fips-config
+    - jemalloc
+    - ca-certificates-bundle
+    - tzdata
+
+accounts:
+  groups:
+    - groupname: nonroot
+      gid: 65532
+  users:
+    - username: nonroot
+      uid: 65532
+      gid: 65532
+      homedir: /home/nonroot
+  run-as: 65532
+
+environment:
+  PATH: /opt/java/openjdk/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  JAVA_HOME: /opt/java/openjdk
+  LANG: C.UTF-8
+  LC_ALL: C.UTF-8
+  # jemalloc native memory allocator configuration
+  LD_PRELOAD: /usr/lib/libjemalloc.so.2
+  MALLOC_CONF: "background_thread:true,metadata_thp:auto,dirty_decay_ms:10000,muzzy_decay_ms:15000"
+  # FIPS 140-3 Modules, BCFKS Keystore, and JVM Container & GC Performance Tuning
+  JAVA_TOOL_OPTIONS: >-
+    --module-path=/opt/java/fips
+    --add-modules=ALL-MODULE-PATH
+    -Djava.security.properties==/opt/java/fips/fips.security
+    -Dorg.bouncycastle.fips.approved_only=true
+    -Djavax.net.ssl.trustStore=/opt/java/fips/cacerts.bcfks
+    -Djavax.net.ssl.trustStoreType=BCFKS
+    -Djavax.net.ssl.trustStorePassword=changeit
+    -XX:+UseContainerSupport
+    -XX:MaxRAMPercentage=70.0
+    -XX:+UseG1GC
+    -XX:+UseStringDeduplication
+    -XX:G1PeriodicGCInterval=15000
+    -Xshare:auto
+    -XX:+ExitOnOutOfMemoryError
+
+paths:
+  - path: /tmp
+    type: directory
+    permissions: 01777
+    uid: 0
+    gid: 0
+  - path: /app
+    type: directory
+    permissions: 0755
+    uid: 65532
+    gid: 65532
+  - path: /home/nonroot
+    type: directory
+    permissions: 0700
+    uid: 65532
+    gid: 65532
+
+entrypoint:
+  command: /opt/java/openjdk/bin/java
+
+work-dir: /app
